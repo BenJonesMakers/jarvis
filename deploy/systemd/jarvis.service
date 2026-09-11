@@ -1,0 +1,47 @@
+# Linux service unit for a production JARVIS deployment (e.g. a dedicated
+# LXC container or VM). Assumes:
+#   - the repo cloned to /opt/jarvis, with a venv at /opt/jarvis/.venv and
+#     `frontend/dist` already built (`npm run build`) — server.py serves the
+#     built frontend/dashboard itself when that directory exists, so this
+#     unit is the only process needed
+#   - a `jarvis` system user/group owning /opt/jarvis
+#   - cert.pem/key.pem already generated beside server.py
+#   - secrets (CLAUDE_CODE_OAUTH_TOKEN, JARVIS_TTS, etc.) in
+#     /etc/jarvis/jarvis.env, root-owned mode 600 — systemd reads it as
+#     root before dropping to User=, so it never needs to be jarvis-readable
+#   - `claude` installed via the native installer under
+#     /home/jarvis/.local/bin, which is why PATH is set explicitly below:
+#     a systemd service gets none of .bashrc/.profile's PATH additions
+#
+# Install:
+#   sudo cp deploy/systemd/jarvis.service /etc/systemd/system/jarvis.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now jarvis
+#
+# Adjust WorkingDirectory/ExecStart/PATH/User if your layout differs.
+
+[Unit]
+Description=JARVIS voice assistant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jarvis
+Group=jarvis
+WorkingDirectory=/opt/jarvis
+EnvironmentFile=/etc/jarvis/jarvis.env
+Environment=PATH=/home/jarvis/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
+ExecStart=/opt/jarvis/.venv/bin/python server.py --host 127.0.0.1
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=jarvis
+
+# Defense in depth alongside claude_env.py's own scrub: even if something is
+# ever set wrong in jarvis.env, the unit itself never inherits an API key.
+UnsetEnvironment=ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL
+
+[Install]
+WantedBy=multi-user.target
