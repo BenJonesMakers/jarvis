@@ -1,7 +1,57 @@
 import asyncio
+import os
+import sys
+import tempfile
 
 import pytest
 import pytest_asyncio
+
+# Before anything imports `server` (which loads `.env` at module scope): point
+# its loader at a path that does not exist, so a developer's real `.env` — a
+# Fish key, JARVIS_TTS, a brain model — cannot leak into the test process and
+# make results depend on the machine. The autouse fixture below still gives
+# each test its own writable JARVIS_ENV_FILE; this only guards the first import.
+os.environ.setdefault(
+    "JARVIS_ENV_FILE",
+    os.path.join(tempfile.gettempdir(), "jarvis-tests-nonexistent.env"),
+)
+
+
+# --- Windows: read/write files as UTF-8, like the Linux CI already does -------
+# The suite reads its own source and fixtures through `Path.read_text()` /
+# `Path.open()` in dozens of places with no `encoding=`. On Windows that
+# defaults to the locale codepage (cp1252) and chokes on the em-dashes and
+# smart quotes throughout this repo — five test files fail to even import.
+# The application code passes `encoding=` explicitly (it has to: it runs
+# outside pytest); this only lifts the *test tree* to the same UTF-8 default a
+# UTF-8 locale gives it for free.
+if sys.platform == "win32":
+    import pathlib as _pathlib
+
+    _orig_read_text = _pathlib.Path.read_text
+    _orig_write_text = _pathlib.Path.write_text
+    _orig_open = _pathlib.Path.open
+
+    def _read_text(self, encoding=None, errors=None, newline=None):
+        return _orig_read_text(self, encoding=encoding or "utf-8", errors=errors)
+
+    def _write_text(self, data, encoding=None, errors=None, newline=None):
+        # newline="\n", not the platform default: several tests compare a
+        # write_text() against a read_bytes(), and CRLF translation on Windows
+        # would break every one. The Linux CI writes LF.
+        return _orig_write_text(self, data, encoding=encoding or "utf-8",
+                                errors=errors, newline=newline or "\n")
+
+    def _open(self, mode="r", buffering=-1, encoding=None, errors=None, newline=None):
+        if "b" not in mode and encoding is None:
+            encoding = "utf-8"
+        if "b" not in mode and newline is None and ("w" in mode or "a" in mode or "x" in mode):
+            newline = "\n"
+        return _orig_open(self, mode, buffering, encoding, errors, newline)
+
+    _pathlib.Path.read_text = _read_text
+    _pathlib.Path.write_text = _write_text
+    _pathlib.Path.open = _open
 
 
 @pytest.fixture(autouse=True)

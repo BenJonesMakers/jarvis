@@ -737,7 +737,7 @@ def _token() -> str:
     if not path:
         return ""
     try:
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             return fh.read().strip()
     except OSError:
         return ""

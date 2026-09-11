@@ -129,6 +129,16 @@ async def h():
     await harness.sched.stop()
 
 
+@pytest_asyncio.fixture
+async def h_no_voice():
+    """Like `h`, but wired the way server.py wires JARVIS_TTS=browser:
+    voiceless chunks are the whole point, not a failure."""
+    harness = Harness(voice_expected=False)
+    await harness.sched.start()
+    yield harness
+    await harness.sched.stop()
+
+
 @pytest.mark.asyncio
 async def test_turn_streams_in_order_with_prefetch_and_status(h):
     s = h.sched
@@ -756,6 +766,22 @@ async def test_voice_failing_notice_arrives_in_order(h):
     await h.ack_all(rounds=3)
     texts = [m.get("text") for m in h.msgs if m["type"] in ("text", "audio")]
     assert texts == ["One.", "Two.", "Three.", "My voice is failing, sir.", "Four."]
+
+
+@pytest.mark.asyncio
+async def test_voiceless_by_design_never_reports_failing(h_no_voice):
+    """JARVIS_TTS=browser (SpeechScheduler(voice_expected=False)): every
+    chunk comes back with no audio on purpose. Without the flag this looks
+    exactly like three real TTS failures in a row and gets "My voice is
+    failing, sir." appended — wrong for a setup that never had server audio."""
+    s = h_no_voice.sched
+    h_no_voice.fail_texts.update({"One.", "Two.", "Three.", "Four.", "Five.", "Six."})
+    await s.say("One. Two. Three. Four. Five. Six.")
+    await asyncio.sleep(0.3)
+    await h_no_voice.ack_all(rounds=4)
+    texts = [m.get("text") for m in h_no_voice.msgs if m["type"] in ("text", "audio")]
+    assert "My voice is failing, sir." not in texts
+    assert texts == ["One.", "Two.", "Three.", "Four.", "Five.", "Six."]
 
 
 @pytest.mark.asyncio

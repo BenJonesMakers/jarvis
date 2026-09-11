@@ -21,6 +21,7 @@ updated is the one nobody notices.
 from __future__ import annotations
 
 import os
+import shlex
 
 # Every ANTHROPIC_* variable, not just the key: the base URL and the model
 # override redirect a child just as effectively as credentials do.
@@ -46,6 +47,25 @@ SCRUBBED_ENV_KEYS = {"CLAUDECODE"}
 # unboundedly — pass this to every `create_subprocess_exec(..., limit=...)`
 # that reads a Claude Code child's stdout/stderr.
 STREAM_LINE_LIMIT = 64 * 1024 * 1024  # 64 MiB per line
+
+
+def split_command(spec: str) -> list[str]:
+    """Split a configured `claude` invocation into argv.
+
+    `spec` is usually a bare path but may carry arguments (the tests pass
+    `"<python> <script>"`). Two traps:
+
+      * A bare path can contain spaces — `C:\\Users\\me\\Author Software\\claude.exe`
+        — and must NOT be split on them. So if the whole string names an
+        existing file, it is taken verbatim.
+      * Otherwise it is a command line and is split. POSIX `shlex.split` treats
+        `\\` as an escape and eats every backslash in a Windows path, so on
+        Windows the split is done with `posix=False`, which keeps separators.
+    """
+    spec = spec.strip()
+    if spec and os.path.isfile(spec):
+        return [spec]
+    return shlex.split(spec, posix=(os.name != "nt"))
 
 
 def child_env(base: dict[str, str] | None = None) -> dict[str, str]:

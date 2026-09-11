@@ -102,7 +102,7 @@ class RosterEntry:
 
 def _parse_entry(path: Path, root: Path) -> RosterEntry | None:
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None            # unreadable, empty, or caught mid-write
     if not isinstance(data, dict):

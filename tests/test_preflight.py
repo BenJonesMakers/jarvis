@@ -389,8 +389,17 @@ def test_fish_api_key_present(monkeypatch):
     assert check.status == STATUS_OK
 
 
-def test_fish_api_key_absent(monkeypatch):
+def test_fish_api_key_absent_falls_back_to_browser_voice(monkeypatch):
     monkeypatch.delenv("FISH_API_KEY", raising=False)
+    monkeypatch.delenv("JARVIS_BROWSER_TTS", raising=False)
+    check = preflight._check_fish_api_key_sync()
+    assert check.status == STATUS_WARN
+    assert check.remedy
+
+
+def test_fish_api_key_absent_and_browser_tts_disabled_is_fatal(monkeypatch):
+    monkeypatch.delenv("FISH_API_KEY", raising=False)
+    monkeypatch.setenv("JARVIS_BROWSER_TTS", "0")
     check = preflight._check_fish_api_key_sync()
     assert check.status == STATUS_FAIL
     assert check.remedy

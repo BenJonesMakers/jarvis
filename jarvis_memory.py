@@ -117,7 +117,7 @@ def _title_of(path: Path) -> str | None:
     """The `# Title` header of an existing memory file, or None if it
     cannot be read/found (a file the user emptied or rewrote by hand)."""
     try:
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
     except OSError:
         return None
     for line in text.splitlines():
@@ -160,14 +160,14 @@ def write_memory(title: str, body: str) -> Path:
         n += 1
 
     stamp = datetime.now().strftime("%Y-%m-%d")
-    path.write_text(f"# {title.strip()}\n\n_{stamp}_\n\n{body.strip()}\n")
+    path.write_text(f"# {title.strip()}\n\n_{stamp}_\n\n{body.strip()}\n", encoding="utf-8")
     return path
 
 
 def read_memory(name: str) -> str | None:
     path = data_paths.memory_dir() / f"{slugify(name)}.md"
     try:
-        return path.read_text()
+        return path.read_text(encoding="utf-8")
     except OSError:
         return None
 
@@ -203,13 +203,13 @@ def ensure_layout() -> Path:
     home = data_paths.ensure_memory_layout()
     index = _index_path()
     if not index.exists():
-        index.write_text(INDEX_HEADER)
+        index.write_text(INDEX_HEADER, encoding="utf-8")
     return home
 
 
 def index_lines() -> list[str]:
     try:
-        text = _index_path().read_text()
+        text = _index_path().read_text(encoding="utf-8")
     except OSError:
         return []
     return [ln for ln in text.splitlines() if ln.startswith("- [")]
@@ -278,7 +278,7 @@ def add_to_index(title: str, hook: str) -> None:
     line = _index_line(title, slug, hook)
 
     try:
-        existing = path.read_text()
+        existing = path.read_text(encoding="utf-8")
     except OSError:
         existing = INDEX_HEADER
 
@@ -294,7 +294,7 @@ def add_to_index(title: str, hook: str) -> None:
             raise IndexFull(
                 f"MEMORY.md already holds {MEMORY_INDEX_MAX} memories")
         kept.append(line)
-    path.write_text("\n".join(kept).rstrip("\n") + "\n")
+    path.write_text("\n".join(kept).rstrip("\n") + "\n", encoding="utf-8")
 
 
 def index_is_full() -> bool:
@@ -320,8 +320,8 @@ def write_project_note(project: str, text: str) -> Path:
     path = data_paths.projects_dir() / f"{slugify(project)}.md"
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     if not path.exists():
-        path.write_text(f"# {project}\n\n")
-    with path.open("a") as fh:
+        path.write_text(f"# {project}\n\n", encoding="utf-8")
+    with path.open("a", encoding="utf-8") as fh:
         fh.write(f"_{stamp}_ — {text}\n")
     return path
 
@@ -329,7 +329,7 @@ def write_project_note(project: str, text: str) -> Path:
 def read_project_note(project: str) -> str | None:
     path = data_paths.projects_dir() / f"{slugify(project)}.md"
     try:
-        return path.read_text()
+        return path.read_text(encoding="utf-8")
     except OSError:
         return None
 
@@ -396,7 +396,7 @@ def write_journal(text: str, reason: str = "shutdown",
                   f"{untrusted_source} that day."
                   if untrusted_source else "")
     path.write_text(
-        f"# {header_stamp} ({reason}){provenance}\n\n{text.strip()}\n")
+        f"# {header_stamp} ({reason}){provenance}\n\n{text.strip()}\n", encoding="utf-8")
     return path
 
 
@@ -459,7 +459,7 @@ def latest_journal(limit: int = 1200, include_placeholders: bool = False) -> str
     if not entries:
         return None
     try:
-        text = entries[-1][2].read_text()
+        text = entries[-1][2].read_text(encoding="utf-8")
     except OSError:
         return None
     return text if len(text) <= limit else text[: limit - 1] + "…"
@@ -618,7 +618,7 @@ def search(query: str, limit: int = 5) -> list[dict]:
     hits = []
     for kind, path in _sources():
         try:
-            body = path.read_text()
+            body = path.read_text(encoding="utf-8")
         except OSError:
             continue
         score = _score(words, path.stem, body)

@@ -88,7 +88,15 @@ arbitrary LLM and file content, so everything goes through
   forwards `tools/call` to `POST /internal/tool`
 - `speech.py` — Sentence splitting and the scheduler that owns every
   utterance JARVIS speaks
-- `tts.py` — Fish Audio synthesis, one request per sentence chunk
+- `tts.py` — speech synthesis, one request per sentence chunk. Three
+  providers behind `JARVIS_TTS`: `fish` (Fish Audio, paid, default), `edge`
+  (Microsoft Edge neural voices via the optional `edge-tts` package — free,
+  no key), and `browser` (no server-side voice at all — every chunk goes to
+  the browser's Web Speech API). `fish`/`edge` return one MP3 per chunk so
+  the scheduler's mp3-length ack floor still applies; `browser` always
+  returns `None`, which is why `SpeechScheduler(voice_expected=...)` exists —
+  without it, three voiceless-by-design chunks in a row would look like three
+  TTS failures and trigger "My voice is failing, sir."
 - `frontend/src/orb.ts` — Three.js particle orb visualization
 - `frontend/src/voice.ts` — Web Speech API + audio playback
 - `frontend/src/main.ts` — Frontend state machine
@@ -160,8 +168,25 @@ JARVIS builds**. It is only this repository's own copies that are gone.
   never spawns it (every test sets this)
 - `JARVIS_MUTE_MIC_DURING_SPEECH` (optional, default false) — fallback if echo
   rejection is not enough with a given microphone
-- `FISH_API_KEY` (required) — Fish Audio TTS
-- `FISH_VOICE_ID` (optional) — Voice model ID
+- `JARVIS_TTS` (optional, default `fish`) — `fish`, `edge` or `browser`.
+  `edge` uses the free Microsoft Edge neural voices via the optional
+  `edge-tts` package (no key, one network call per chunk); `JARVIS_EDGE_VOICE`
+  sets the voice (default `en-GB-RyanNeural`). `browser` has no server-side
+  voice at all — every chunk is a `text` frame the browser speaks; the
+  plainest voice available, and it skips the base64-MP3-over-WebSocket path
+  entirely, which makes it useful for isolating whether a playback symptom
+  lives in that pipeline
+- `FISH_API_KEY` (required for the Fish voice) — Fish Audio TTS
+- `FISH_VOICE_ID` (optional) — Fish voice model ID
+- `JARVIS_BROWSER_TTS` (optional, default `auto`) — speak `text` fallback
+  frames (chunks the provider could not synthesise, or — with
+  `JARVIS_TTS=browser` — every chunk) with the browser's Web Speech API.
+  `auto` enables it whenever the server has no voice of its own
+  (`JARVIS_TTS=browser`, or `fish` with a missing/placeholder key); `1`/`0`
+  force it. The server just sets a `browserTTS` flag in the `config` frame;
+  `frontend/src/voice.ts` (`createBrowserSpeech`) does the speaking, picking
+  an en-GB voice. None of the scheduler's echo/ack machinery applies to
+  these frames — it is a fallback, not a second voice path.
 - `USER_NAME` (optional) — Your name for JARVIS to use
 - `JARVIS_DATA_DIR` (optional) — Where JARVIS writes everything: the SQLite
   database, memory Markdown, usage.json, the tool token. Defaults to `data/`

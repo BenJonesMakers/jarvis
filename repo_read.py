@@ -507,7 +507,7 @@ def git_branch(root: Path) -> str | None:
     dot = root / ".git"
     try:
         if dot.is_file():
-            pointer = dot.read_text(errors="replace").strip()
+            pointer = dot.read_text(encoding="utf-8", errors="replace").strip()
             if not pointer.startswith("gitdir:"):
                 return None
             head = Path(pointer.split(":", 1)[1].strip()) / "HEAD"
@@ -515,7 +515,7 @@ def git_branch(root: Path) -> str | None:
             head = dot / "HEAD"
         else:
             return None
-        text = head.read_text(errors="replace").strip()
+        text = head.read_text(encoding="utf-8", errors="replace").strip()
     except OSError:
         return None
     if text.startswith("ref: refs/heads/"):
@@ -550,7 +550,7 @@ def readme_opening(root: Path, limit: int = README_CHARS) -> str:
     if path is None:
         return ""
     try:
-        raw = path.read_text(errors="replace")[:20_000]
+        raw = path.read_text(encoding="utf-8", errors="replace")[:20_000]
     except OSError:
         return ""
 

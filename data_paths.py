@@ -144,7 +144,7 @@ def _recorded_seed_hash(seed: Path) -> Optional[str]:
     match that would send an edited file to the overwriter.
     """
     try:
-        body = json.loads(seed.read_text())
+        body = json.loads(seed.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
     except (OSError, ValueError) as e:
@@ -165,7 +165,7 @@ def _write_atomically(path: Path, text: str) -> bool:
     try:
         fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}-")
         try:
-            with os.fdopen(fd, "w") as fh:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
                 fh.write(text)
             os.replace(tmp, path)
         except BaseException:
@@ -226,7 +226,7 @@ def _sync_template(template: Path, target: Path, seed: Path,
     key = str(target)
 
     try:
-        shipped = template.read_text()
+        shipped = template.read_text(encoding="utf-8")
     except OSError as e:                                # pragma: no cover
         log.warning(f"data_paths: cannot read the {what} template ({e})")
         return "kept"
@@ -368,6 +368,11 @@ def ensure_tool_token() -> str:
     A path that is not a regular file this user owns raises, rather than
     being quietly replaced: it is somebody else's file, and deleting it is
     not ours to do.
+
+    The symlink/ownership hardening is POSIX-specific: `O_NOFOLLOW`,
+    `fchmod` and `st_uid` do not exist on Windows, where the file already
+    lives inside the user's own profile-scoped data directory. There the
+    adoption falls back to opening the regular file by fd and reading it.
     """
     import secrets
     import stat as _stat
@@ -375,8 +380,9 @@ def ensure_tool_token() -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
 
     token = secrets.token_urlsafe(32)
+    _binary = getattr(os, "O_BINARY", 0)
     try:
-        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY | _binary, 0o600)
     except FileExistsError:
         pass
     else:
@@ -386,14 +392,15 @@ def ensure_tool_token() -> str:
             os.close(fd)
         return token
 
-    fd = os.open(str(path), os.O_RDWR | os.O_NOFOLLOW)
+    fd = os.open(str(path), os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | _binary)
     try:
         info = os.fstat(fd)
         if not _stat.S_ISREG(info.st_mode):
             raise OSError(f"{path} is not a regular file")
-        if info.st_uid != os.getuid():
+        if hasattr(os, "getuid") and info.st_uid != os.getuid():
             raise OSError(f"{path} is owned by uid {info.st_uid}, not by us")
-        os.fchmod(fd, 0o600)
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
         existing = os.read(fd, 4096).decode("utf-8", "ignore").strip()
         if existing:
             return existing

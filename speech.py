@@ -360,14 +360,24 @@ class SpeechScheduler:
                  batch_settle: float = 2.0, ack_timeout: float = 45.0,
                  transport_ready: Optional[Callable[[], bool]] = None,
                  bridges: tuple = BRIDGES, cancel_words: tuple = CANCEL_WORDS,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic,
+                 voice_expected: bool = True):
         """`clock` drives scheduling decisions only; `wait_for` and
         `open_cancel_window` sleep in real time. `transport_ready` says whether
-        anyone can hear us — proactive (unread/batched) speech waits for it."""
+        anyone can hear us — proactive (unread/batched) speech waits for it.
+
+        `voice_expected=False` says `synthesize` is SUPPOSED to return None for
+        every chunk (JARVIS_TTS=browser: no server-side voice at all, every
+        chunk goes out as a `text` frame on purpose). Without it, three
+        genuinely voiceless chunks in a row look identical to three real TTS
+        failures, and the third one gets "My voice is failing, sir." appended
+        to it — true for a Fish outage, false and confusing for a deliberate
+        text-only setup that was never going to have server audio."""
         self._clock = clock
         self.ack_timeout = ack_timeout             # a chunk unacked this long = the client is gone
         self._transport_ready = transport_ready or (lambda: True)
         self._synth = synthesize
+        self._voice_expected = voice_expected
         self._emit_raw = emit
         # One protocol frame at a time, in order. Not re-entrant: the transport
         # passed as `emit` must never call back into barge_in()/say() from
@@ -900,9 +910,10 @@ class SpeechScheduler:
         chunk.audio = audio
         chunk.ready = True
         if audio is None:
-            self._tts_failures += 1
-            if self._tts_failures == 3:
-                chunk.notice = True              # the send loop warns right after this chunk
+            if self._voice_expected:
+                self._tts_failures += 1
+                if self._tts_failures == 3:
+                    chunk.notice = True          # the send loop warns right after this chunk
         else:
             self._tts_failures = 0
         self._kick()

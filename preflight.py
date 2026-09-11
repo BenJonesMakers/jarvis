@@ -133,9 +133,22 @@ def _parse_version(text: str) -> Optional[tuple[int, int, int]]:
 
 # ── individual checks ────────────────────────────────────────────────────
 
+def _resolve_claude() -> Optional[str]:
+    """The `claude` the brain and run pipeline will actually spawn:
+    `JARVIS_CLAUDE_PATH` if set (brain.py honours it — and it is how a
+    machine whose node manager strands global installs off PATH points at
+    the binary), else `claude` on PATH."""
+    override = os.getenv("JARVIS_CLAUDE_PATH", "").strip()
+    if override:
+        parts = claude_env.split_command(override)
+        return parts[0] if parts else None
+    return shutil.which("claude")
+
+
 async def _check_claude_cli(timeout: float = DEFAULT_CHECK_TIMEOUT) -> Check:
-    """`claude` is on PATH and is at least MIN_CLAUDE_VERSION."""
-    claude = shutil.which("claude")
+    """`claude` is resolvable (PATH or JARVIS_CLAUDE_PATH) and at least
+    MIN_CLAUDE_VERSION."""
+    claude = _resolve_claude()
     if not claude:
         return Check(
             name="claude_cli",
@@ -143,7 +156,8 @@ async def _check_claude_cli(timeout: float = DEFAULT_CHECK_TIMEOUT) -> Check:
             message="`claude` is not on PATH.",
             remedy=(
                 "Install Claude Code (npm install -g @anthropic-ai/claude-code, "
-                f"{MIN_CLAUDE_VERSION_STR} or newer) and make sure it's on PATH."
+                f"{MIN_CLAUDE_VERSION_STR} or newer) and put it on PATH, or set "
+                "JARVIS_CLAUDE_PATH to the binary."
             ),
         )
 
@@ -270,7 +284,7 @@ async def _check_claude_login(timeout: float = DEFAULT_CHECK_TIMEOUT) -> Check:
     check stays OK (matching prior behaviour) but says so honestly rather
     than implying a guarantee it cannot make.
     """
-    claude = shutil.which("claude")
+    claude = _resolve_claude()
     if not claude:
         return Check(
             name="claude_login",
@@ -440,13 +454,39 @@ def _check_screen_recording_sync() -> Check:
 
 
 def _check_fish_api_key_sync() -> Check:
-    """FISH_API_KEY must be set or JARVIS has no voice."""
-    if os.environ.get("FISH_API_KEY"):
+    """The voice check. Fish Audio (JARVIS_TTS=fish) needs FISH_API_KEY; the
+    free Edge provider needs the `edge-tts` package; `browser` needs neither
+    (it is nothing but the browser's Web Speech API, by design); without any
+    of that, the browser voice still fills in unless JARVIS_BROWSER_TTS is 0."""
+    provider = os.environ.get("JARVIS_TTS", "fish").strip().lower()
+    if provider == "browser":
+        return Check(name="fish_api_key", status=STATUS_OK,
+                     message="JARVIS_TTS=browser: the browser's own voice, nothing else.")
+    if provider == "edge":
+        try:
+            import edge_tts  # noqa: F401
+            return Check(name="fish_api_key", status=STATUS_OK,
+                         message="JARVIS_TTS=edge: free Edge neural voice.")
+        except ImportError:
+            return Check(name="fish_api_key", status=STATUS_FAIL,
+                         message="JARVIS_TTS=edge but `edge-tts` is not installed.",
+                         remedy="pip install edge-tts")
+    key = (os.environ.get("FISH_API_KEY") or "").strip()
+    if key and key != "your-fish-audio-api-key-here":
         return Check(name="fish_api_key", status=STATUS_OK, message="FISH_API_KEY is set.")
+    if os.environ.get("JARVIS_BROWSER_TTS", "auto").strip().lower() not in ("0", "false", "no", "off"):
+        return Check(
+            name="fish_api_key",
+            status=STATUS_WARN,
+            message="FISH_API_KEY is not set; using the browser's built-in voice.",
+            remedy="Set FISH_API_KEY for the JARVIS voice, or JARVIS_TTS=edge "
+                   "(pip install edge-tts) for a free neural voice, or "
+                   "JARVIS_BROWSER_TTS=0 to keep replies text-only.",
+        )
     return Check(
         name="fish_api_key",
         status=STATUS_FAIL,
-        message="FISH_API_KEY is not set.",
+        message="FISH_API_KEY is not set and JARVIS_BROWSER_TTS=0.",
         remedy="Get a Fish Audio API key from fish.audio and set FISH_API_KEY in .env.",
     )
 

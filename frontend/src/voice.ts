@@ -471,6 +471,106 @@ export function createVoiceInput(
 }
 
 // ---------------------------------------------------------------------------
+// Browser speech — the fallback voice (Web Speech API)
+// ---------------------------------------------------------------------------
+
+export interface BrowserSpeech {
+  /** Queue one sentence to be spoken by the OS voice. */
+  speak(text: string): void;
+  /** Stop now and drop anything queued. */
+  cancel(): void;
+  /** Called when the queue goes from empty to speaking. */
+  onStart(cb: () => void): void;
+  /** Called when the last queued sentence finishes. */
+  onIdle(cb: () => void): void;
+  /** True while a sentence is queued or being spoken. */
+  isSpeaking(): boolean;
+  readonly supported: boolean;
+}
+
+/**
+ * When Fish Audio cannot voice a chunk the server sends it as a `text` frame.
+ * With `browserTTS` on, this speaks those frames with `speechSynthesis` — no
+ * key, no network — keeping JARVIS audible on the OS's own voice.
+ *
+ * `speechSynthesis` has no real queue we can trust across browsers (Chrome
+ * stalls a long backlog), so this holds its own and feeds one utterance at a
+ * time. A British voice is chosen when the platform offers one, to stay in
+ * character.
+ */
+export function createBrowserSpeech(): BrowserSpeech {
+  const synth = typeof window !== "undefined" ? window.speechSynthesis : undefined;
+  const pending: string[] = [];
+  let speaking = false;
+  let startCb: (() => void) | null = null;
+  let idleCb: (() => void) | null = null;
+
+  function pickVoice(): SpeechSynthesisVoice | null {
+    if (!synth) return null;
+    const voices = synth.getVoices();
+    if (!voices.length) return null;
+    return (
+      voices.find((v) => /en[-_]GB/i.test(v.lang) && /male|daniel|arthur|george/i.test(v.name)) ||
+      voices.find((v) => /en[-_]GB/i.test(v.lang)) ||
+      voices.find((v) => /^en\b/i.test(v.lang)) ||
+      null
+    );
+  }
+
+  function next() {
+    if (!synth) return;
+    const text = pending.shift();
+    if (text === undefined) {
+      if (speaking) {
+        speaking = false;
+        idleCb?.();
+      }
+      return;
+    }
+    const u = new SpeechSynthesisUtterance(text);
+    const v = pickVoice();
+    if (v) u.voice = v;
+    u.rate = 1.0;
+    u.pitch = 0.9;
+    u.onend = () => next();
+    u.onerror = () => next();
+    synth.speak(u);
+  }
+
+  return {
+    supported: Boolean(synth),
+    speak(text: string) {
+      const t = (text || "").trim();
+      if (!synth || !t) return;
+      pending.push(t);
+      if (!speaking) {
+        speaking = true;
+        startCb?.();
+        next();
+      }
+    },
+    cancel() {
+      pending.length = 0;
+      speaking = false;
+      try {
+        synth?.cancel();
+      } catch {
+        // nothing to cancel
+      }
+    },
+    onStart(cb) {
+      startCb = cb;
+    },
+    onIdle(cb) {
+      idleCb = cb;
+    },
+    isSpeaking() {
+      return speaking;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Audio Player — ordered chunks with acknowledgements
 // ---------------------------------------------------------------------------
 

@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import difflib
+import random
 import re
 import secrets
 import shlex
@@ -47,10 +48,12 @@ def _parse_env_lines(text: str) -> list[tuple[str, str]]:
     return out
 
 
-# Load .env file if present
-_env_path = Path(__file__).parent / ".env"
+# Load .env file if present. `JARVIS_ENV_FILE` redirects it (the test suite
+# points it at a tmp file so a developer's real .env cannot leak into a test),
+# matching `_env_file_path()` below.
+_env_path = Path(os.getenv("JARVIS_ENV_FILE", "").strip() or (Path(__file__).parent / ".env"))
 if _env_path.exists():
-    for _k, _v in _parse_env_lines(_env_path.read_text()):
+    for _k, _v in _parse_env_lines(_env_path.read_text(encoding="utf-8")):
         os.environ.setdefault(_k, _v)
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -97,7 +100,6 @@ log = logging.getLogger("jarvis")
 
 FISH_API_KEY = os.getenv("FISH_API_KEY", "")
 FISH_VOICE_ID = os.getenv("FISH_VOICE_ID", "612b878b113047d9a770c069c8b4fdfe")  # JARVIS (MCU)
-FISH_API_URL = "https://api.fish.audio/v1/tts"
 USER_NAME = os.getenv("USER_NAME", "sir")
 _SKIP_PERMISSIONS = os.getenv("JARVIS_SKIP_PERMISSIONS", "true").lower() not in ("0", "false", "no")
 
@@ -265,7 +267,7 @@ def _scan_projects_blocking(deadline: float) -> tuple[list[dict], bool]:
                     branch = "unknown"
                     head_file = git_dir / "HEAD"
                     try:
-                        head_content = head_file.read_text().strip()
+                        head_content = head_file.read_text(encoding="utf-8").strip()
                         if head_content.startswith("ref: refs/heads/"):
                             branch = head_content.replace("ref: refs/heads/", "")
                     except Exception:
@@ -457,39 +459,18 @@ _last_greeting_time: float = 0
 
 
 # ---------------------------------------------------------------------------
-# TTS (Fish Audio)
+# TTS — see tts.py (JARVIS_TTS selects Fish Audio or free Edge neural voices)
 # ---------------------------------------------------------------------------
 
 async def synthesize_speech(text: str) -> Optional[bytes]:
-    """Generate speech audio from text using Fish Audio TTS."""
-    if not FISH_API_KEY:
-        log.warning("FISH_API_KEY not set, skipping TTS")
+    """One-shot synthesis for /api/tts-test, through whichever provider is
+    configured."""
+    r = await tts.synthesize_chunk(text, api_key=FISH_API_KEY, voice_id=FISH_VOICE_ID)
+    if r is None:
         return None
-
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as http:
-            response = await http.post(
-                FISH_API_URL,
-                headers={
-                    "Authorization": f"Bearer {FISH_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "text": text,
-                    "reference_id": FISH_VOICE_ID,
-                    "format": "mp3",
-                },
-            )
-            if response.status_code == 200:
-                _session_tokens["tts_calls"] += 1
-                _append_usage_entry(0, 0, "tts")
-                return response.content
-            else:
-                log.error(f"TTS error: {response.status_code}")
-                return None
-    except Exception as e:
-        log.error(f"TTS error: {e}")
-        return None
+    _session_tokens["tts_calls"] += 1
+    _append_usage_entry(0, 0, "tts")
+    return r.audio
 
 
 # ---------------------------------------------------------------------------
@@ -497,6 +478,28 @@ async def synthesize_speech(text: str) -> Optional[bytes]:
 # ---------------------------------------------------------------------------
 
 MUTE_MIC_DURING_SPEECH = os.getenv("JARVIS_MUTE_MIC_DURING_SPEECH", "false").lower() in ("1", "true", "yes")
+
+# When the configured TTS provider cannot synthesise a chunk the scheduler
+# already sends the sentence as a plain `text` frame instead of dropping it.
+# `JARVIS_BROWSER_TTS` lets the browser voice those frames with the Web Speech
+# API — no key, no network, no dependency, at the cost of the OS's built-in
+# voice. `auto` (the default) turns it on only when the server has no usable
+# voice of its own — i.e. the Fish provider with no real key; `1`/`0` force it.
+def _browser_tts_enabled() -> bool:
+    mode = os.getenv("JARVIS_BROWSER_TTS", "auto").strip().lower()
+    if mode in ("1", "true", "yes", "on"):
+        return True
+    if mode in ("0", "false", "no", "off"):
+        return False
+    p = tts.provider()
+    if p == "browser":
+        return True           # the only voice there is
+    if p != "fish":
+        return False
+    key = FISH_API_KEY.strip()
+    return not key or key == "your-fish-audio-api-key-here"
+
+BROWSER_TTS = _browser_tts_enabled()
 
 voice_clients: set[WebSocket] = set()
 brain_instance: Optional[Brain] = None
@@ -631,7 +634,11 @@ def _fmt_reset(ts) -> str:
         when = datetime.fromtimestamp(float(ts))
     except (TypeError, ValueError, OSError, OverflowError):
         return "later"
-    clock = when.strftime("%-I:%M %p").replace(":00 ", " ")   # "10:00 AM" -> "10 AM"
+    # No `%-I` / `%-d`: those are glibc extensions and raise on Windows. Strip
+    # the leading zero by hand instead.
+    hour12 = when.hour % 12 or 12
+    minute = f":{when.minute:02d}" if when.minute else ""
+    clock = f"{hour12}{minute} {when.strftime('%p')}"
     days = (when.date() - datetime.now().date()).days
     if days <= 0:
         return clock
@@ -639,7 +646,7 @@ def _fmt_reset(ts) -> str:
         return f"tomorrow at {clock}"
     if days < 7:
         return f"{when.strftime('%A')} at {clock}"
-    return f"{when.strftime('%A %-d %B')} at {clock}"
+    return f"{when.strftime('%A')} {when.day} {when.strftime('%B')} at {clock}"
 
 
 # True but useless: "down" names neither cause nor remedy. When the brain's
@@ -781,7 +788,7 @@ def _read_connections_file() -> tuple[dict, list[str]]:
     """The raw `mcpServers` block, plus anything wrong with the file itself."""
     path = data_paths.connections_path()
     try:
-        raw = path.read_text()
+        raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return {}, []          # nothing declared is not a problem
     except OSError as e:
@@ -892,7 +899,7 @@ def _write_mcp_config(home: Path) -> Path:
     # this to be looser. Chmod after the write as well as before, so a file
     # another local process pre-created with looser permissions does not keep
     # read access to what we just put in it.
-    path.write_text(json.dumps(config, indent=2))
+    path.write_text(json.dumps(config, indent=2), encoding="utf-8")
     try:
         path.chmod(0o600)
     except OSError as e:                             # pragma: no cover
@@ -942,7 +949,8 @@ async def start_brain_and_speech() -> None:
     global brain_instance, speech, _tts_client
     _tts_client = httpx.AsyncClient(timeout=15.0)
     speech = SpeechScheduler(lambda t: _synth_for_speech(t), _voice_emit, prepare=strip_markdown_for_tts,
-                             transport_ready=lambda: bool(voice_clients))
+                             transport_ready=lambda: bool(voice_clients),
+                             voice_expected=(tts.provider() != "browser"))
     await speech.start()
     # ensure_layout() rather than ensure_brain_home(): the persona's
     # `@MEMORY.md` import needs the index to exist, and the memory tools
@@ -1621,6 +1629,29 @@ class _OneLinePerTurn:
             self._sink(text)
 
 
+# Long enough that an ordinary reply — warm brain, no tool, first delta well
+# under a second — finishes (or at least starts streaming) before this ever
+# fires. Short enough that a cold process, a rate-limit retry, or a
+# tool-using turn (which, per `_OneLinePerTurn`, says NOTHING until the very
+# end) doesn't read as dead air.
+_FILLER_DELAY = 0.8
+_FILLERS = ("Let me see, sir.", "One moment.", "Right away.")
+
+
+async def _fill_the_silence(speech, utt, content_started: asyncio.Event) -> None:
+    """Say a short line if nothing has reached the mouth `_FILLER_DELAY`
+    after the turn began — fed as the FIRST chunk of `utt` itself, so
+    whatever the brain eventually says simply follows it in the same
+    utterance. No new priority, no preemption: it only ever runs while `utt`
+    is still empty and still the thing about to be spoken.
+    """
+    try:
+        await asyncio.wait_for(content_started.wait(), _FILLER_DELAY)
+    except asyncio.TimeoutError:
+        if not content_started.is_set() and not utt.cancelled:
+            speech.feed(utt, random.choice(_FILLERS) + " ")
+
+
 async def _handle_utterance(text: str) -> None:
     """One user utterance → one brain turn → streamed speech. Runs as a task so
     the socket loop keeps receiving `played` acks and interim text meanwhile."""
@@ -1638,15 +1669,28 @@ async def _handle_utterance(text: str) -> None:
         await speech.say(line, Priority.NORMAL)
         return
     utt = speech.begin_turn()
+    content_started = asyncio.Event()
+
+    def _sink(d: str) -> None:
+        content_started.set()
+        speech.feed(utt, d)
+
+    filler_task = asyncio.create_task(_fill_the_silence(speech, utt, content_started))
     try:
         try:
             try:
-                hold = _OneLinePerTurn(lambda d: speech.feed(utt, d))
+                hold = _OneLinePerTurn(_sink)
                 result = await brain_instance.turn(text, origin="user",
                                                    on_delta=hold.delta,
                                                    on_tool=hold.tool_started)
                 hold.finish()    # the one line this turn is allowed
             finally:
+                content_started.set()    # stop the filler race regardless of outcome
+                filler_task.cancel()
+                try:
+                    await filler_task
+                except asyncio.CancelledError:
+                    pass
                 await speech.end_turn(utt)  # a turn that never ends would wedge the mouth
         except Exception as e:
             log.error(f"brain turn failed: {e}", exc_info=True)
@@ -1725,7 +1769,7 @@ def _append_usage_entry(input_tokens: int, output_tokens: int, call_type: str = 
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
         }
-        with open(_USAGE_FILE, "a") as f:
+        with open(_USAGE_FILE, "a", encoding="utf-8", newline="\n") as f:
             f.write(_json.dumps(entry) + "\n")
     except Exception:
         pass
@@ -1738,7 +1782,7 @@ def _get_usage_for_period(seconds: float | None = None) -> dict:
     cutoff = (time.time() - seconds) if seconds else 0
     try:
         if _USAGE_FILE.exists():
-            for line in _USAGE_FILE.read_text().strip().split("\n"):
+            for line in _USAGE_FILE.read_text(encoding="utf-8").strip().split("\n"):
                 if not line:
                     continue
                 entry = _json.loads(line)
@@ -2039,7 +2083,7 @@ async def api_memory_doc(kind: str, slug: str):
     if path is None:
         return JSONResponse(status_code=404, content={"error": "Not found"})
     try:
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
     except OSError:
         return JSONResponse(status_code=404, content={"error": "Not found"})
     return {"slug": slug, "text": text}
@@ -6578,7 +6622,7 @@ async def voice_handler(ws: WebSocket):
         {"type": "played", "utt": 3, "idx": 1}      one audio chunk finished playing
 
     Server -> Client:
-        {"type": "config", "muteMicDuringSpeech": false}
+        {"type": "config", "muteMicDuringSpeech": false, "browserTTS": false}
         {"type": "audio", "utt": 3, "idx": 1, "data": "<base64 mp3>", "text": "..."}
         {"type": "stop"}                             halt playback, empty the queue
         {"type": "drop_queued"}                      keep the playing chunk, drop the rest
@@ -6594,7 +6638,8 @@ async def voice_handler(ws: WebSocket):
         # Through this client's own queue, not straight down the socket, so
         # the opening frames cannot be overtaken by a broadcast that lands
         # while they are in flight.
-        _enqueue(queue, {"type": "config", "muteMicDuringSpeech": MUTE_MIC_DURING_SPEECH})
+        _enqueue(queue, {"type": "config", "muteMicDuringSpeech": MUTE_MIC_DURING_SPEECH,
+                         "browserTTS": BROWSER_TTS})
         _enqueue(queue, {"type": "status", "state": "idle"})
 
         global _last_greeting_time
@@ -6791,8 +6836,8 @@ def _read_env(create: bool = False) -> tuple[list[str], dict[str, str]]:
             import shutil as _shutil
             _shutil.copy2(str(example), str(path))
         else:
-            path.write_text("")
-    text = path.read_text()
+            path.write_text("", encoding="utf-8")
+    text = path.read_text(encoding="utf-8")
     lines = text.splitlines()
     # The same parser the boot loader uses, and the same one the writer asks
     # before it commits a value — see `_parse_env_lines`.
@@ -6826,7 +6871,7 @@ def _write_env_key(key: str, value: str) -> None:
         new_lines.append(line)
     if not found:
         new_lines.append(f"{key}={value}")
-    _env_file_path().write_text("\n".join(new_lines) + "\n")
+    _env_file_path().write_text("\n".join(new_lines) + "\n", encoding="utf-8")
     os.environ[key] = value
 
 class KeyUpdate(BaseModel):
@@ -6873,7 +6918,8 @@ async def api_test_fish(body: KeyTest):
 async def api_settings_status():
     import shutil as _shutil
     _, env_dict = _read_env()
-    claude_installed = _shutil.which("claude") is not None
+    _claude_override = (env_dict.get("JARVIS_CLAUDE_PATH", "") or os.getenv("JARVIS_CLAUDE_PATH", "")).strip()
+    claude_installed = bool(_claude_override) or _shutil.which("claude") is not None
     return {
         "claude_code_installed": claude_installed,
         "server_port": 8340,

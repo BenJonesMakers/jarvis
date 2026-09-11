@@ -1,0 +1,23 @@
+# JARVIS is a Unix-first codebase: the app writes LF (see the newline="\n" in
+# data_paths._write_atomically and friends), hashes are computed over LF
+# content, and the shipped templates are compared byte-for-byte. A checkout
+# with core.autocrlf=true would rewrite them to CRLF and break that. Pin LF
+# for every text file so the working tree matches what is committed on every
+# platform.
+* text=auto eol=lf
+
+# Binary assets: never touched.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+*.mp3 binary
+*.wav binary
+
+# Certificates and keys: leave exactly as written.
+*.pem -text

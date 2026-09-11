@@ -76,11 +76,15 @@ limit.](docs/images/dashboard-usage.png)
 *So the number that matters is not a dollar figure — it is how much of your
 subscription's two windows is gone. Fictional sample data.*
 
-**The one thing you pay for is [Fish Audio](https://fish.audio/)**, which
-gives JARVIS his voice. Be aware there is no fallback: `tts.py` returns
-nothing without `FISH_API_KEY`, so JARVIS goes silent and his replies appear
-as text in the browser instead. If you would rather use a different TTS, that
-is a small, well-isolated file to replace — see *Make it yours* below.
+**The voice.** JARVIS's own voice is [Fish Audio](https://fish.audio/) — the
+one paid piece, `JARVIS_TTS=fish` with a `FISH_API_KEY`. To try him out
+without paying, set **`JARVIS_TTS=edge`** (`pip install edge-tts`): free
+Microsoft neural voices, no key, no account, good quality — just not *his*
+voice. For the plainest option of all, **`JARVIS_TTS=browser`** skips
+server-side synthesis entirely and has the browser's own Web Speech API say
+everything — no key, no network call, no dependency, just whatever voice
+Chrome hands you. All of this is one small, well-isolated file — `tts.py` —
+if you want to wire in something else; see *Make it yours*.
 
 ## What he does
 
@@ -165,12 +169,14 @@ cd frontend && npm install && cd ..
 ```
 
 **Fill in the `.env`.** `.env.example` documents the lot; the short version is
-one required key and three optional ones:
+one key for the proper voice and a few optional ones:
 
 ```env
-FISH_API_KEY=...            # required, no fallback
+FISH_API_KEY=...            # the JARVIS voice (JARVIS_TTS=fish, the default)
+# JARVIS_TTS=edge           # free alternative: Microsoft neural voices, no key
+# JARVIS_EDGE_VOICE=en-GB-RyanNeural
+# JARVIS_BROWSER_TTS=auto   # last resort: the browser's own voice; 0 for text-only
 # JARVIS_BRAIN_MODEL=sonnet # optional: the brain's model
-# FISH_VOICE_ID=...         # optional: a different voice
 # USER_NAME=Tony            # optional: what he calls you
 ```
 

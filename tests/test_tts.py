@@ -60,3 +60,62 @@ async def test_empty_text_or_missing_key_short_circuits():
         assert await tts.synthesize_chunk("   ", api_key="k", voice_id="v", client=c) is None
         assert await tts.synthesize_chunk("hi", api_key="", voice_id="v", client=c) is None
     assert calls == []
+
+
+# --- provider selection ------------------------------------------------------
+
+def test_provider_defaults_to_fish_and_rejects_junk(monkeypatch):
+    import tts
+    monkeypatch.delenv("JARVIS_TTS", raising=False)
+    assert tts.provider() == "fish"
+    monkeypatch.setenv("JARVIS_TTS", "EDGE")
+    assert tts.provider() == "edge"
+    monkeypatch.setenv("JARVIS_TTS", "BROWSER")
+    assert tts.provider() == "browser"
+    monkeypatch.setenv("JARVIS_TTS", "elevenlabs")
+    assert tts.provider() == "fish"
+
+
+@pytest.mark.asyncio
+async def test_browser_provider_never_calls_out(monkeypatch):
+    """JARVIS_TTS=browser has no server-side voice by design: it must return
+    None for every chunk without touching the network (Fish's client) or
+    edge_tts at all — a stray call here would mean the "browser" setting was
+    quietly still trying to synthesise something."""
+    import tts
+    monkeypatch.setenv("JARVIS_TTS", "browser")
+
+    def boom(*a, **kw):
+        raise AssertionError("browser provider must not synthesise")
+
+    monkeypatch.setattr(tts, "_synthesize_fish", boom)
+    monkeypatch.setattr(tts, "_synthesize_edge", boom)
+    assert await tts.synthesize_chunk("hello", api_key="k", voice_id="v") is None
+
+
+@pytest.mark.asyncio
+async def test_edge_provider_assembles_audio_chunks(monkeypatch):
+    import tts
+    monkeypatch.setenv("JARVIS_TTS", "edge")
+
+    class FakeCommunicate:
+        def __init__(self, text, voice):
+            self.text, self.voice = text, voice
+
+        async def stream(self):
+            yield {"type": "WordBoundary", "data": None}
+            yield {"type": "audio", "data": b"\xff\xf3\x64\xc4"}
+            yield {"type": "audio", "data": b"rest"}
+
+    monkeypatch.setitem(sys.modules, "edge_tts", type("m", (), {"Communicate": FakeCommunicate}))
+
+    r = await tts.synthesize_chunk("Good evening.", api_key="", voice_id="ignored")
+    assert r is not None and r.audio == b"\xff\xf3\x64\xc4rest"
+
+
+@pytest.mark.asyncio
+async def test_edge_provider_missing_package_returns_none(monkeypatch):
+    import tts
+    monkeypatch.setenv("JARVIS_TTS", "edge")
+    monkeypatch.setitem(sys.modules, "edge_tts", None)   # import edge_tts -> ImportError
+    assert await tts.synthesize_chunk("hi", api_key="", voice_id="v") is None

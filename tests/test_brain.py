@@ -491,6 +491,15 @@ def test_child_env_never_carries_api_credentials(monkeypatch):
     assert env["FISH_API_KEY"] == "keep"
 
 
+def test_split_command_keeps_windows_backslashes():
+    """POSIX shlex.split eats the backslashes in C:\\...\\claude.exe and the
+    spawn then fails 'file not found'. See claude_env.split_command."""
+    import claude_env
+    assert claude_env.split_command(r"C:\Program\claude.exe") == \
+        ([r"C:\Program\claude.exe"] if os.name == "nt" else ["C:Programclaude.exe"])
+    assert claude_env.split_command("python /tmp/fake.py") == ["python", "/tmp/fake.py"]
+
+
 @pytest.mark.asyncio
 async def test_an_error_result_is_an_error_not_an_empty_success(tmp_path):
     import brain

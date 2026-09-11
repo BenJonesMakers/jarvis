@@ -6,7 +6,7 @@
  */
 
 import { createOrb, type OrbState } from "./orb";
-import { createVoiceInput, createAudioPlayer, createMicMonitor } from "./voice";
+import { createVoiceInput, createAudioPlayer, createMicMonitor, createBrowserSpeech } from "./voice";
 import { createSocket } from "./ws";
 import { openSettings, checkFirstTimeSetup } from "./settings";
 import "./style.css";
@@ -56,6 +56,18 @@ const audioPlayer = createAudioPlayer();
 orb.setAnalyser(audioPlayer.getAnalyser());
 
 let muteMicDuringSpeech = false;
+let browserTTS = false;
+
+// The fallback voice: speaks `text` frames (chunks Fish Audio could not voice)
+// with the OS's own speech synthesiser. Enabled by the server's `browserTTS`
+// config flag — see JARVIS_BROWSER_TTS.
+const browserSpeech = createBrowserSpeech();
+browserSpeech.onStart(() => {
+  if (currentState !== "speaking") transition("speaking");
+});
+browserSpeech.onIdle(() => {
+  if (currentState === "speaking") transition(isMuted ? "idle" : "listening");
+});
 
 function transition(newState: State) {
   if (newState === currentState) return;
@@ -138,6 +150,7 @@ function hush() {
   if (currentState !== "speaking") return;
   // Locally first: the round trip is real and silence should be instant.
   audioPlayer.stop();
+  browserSpeech.cancel();
   socket.send({ type: "hush" });
   transition(isMuted ? "idle" : "listening");
 }
@@ -168,6 +181,7 @@ socket.onMessage((msg) => {
 
   if (type === "config") {
     muteMicDuringSpeech = Boolean(msg.muteMicDuringSpeech);
+    browserTTS = Boolean(msg.browserTTS) && browserSpeech.supported;
   } else if (type === "audio") {
     const data = msg.data as string;
     if (data) {
@@ -177,6 +191,7 @@ socket.onMessage((msg) => {
     if (msg.text) console.log("[JARVIS]", msg.text);
   } else if (type === "stop") {
     audioPlayer.stop();
+    browserSpeech.cancel();
     transition(isMuted ? "idle" : "listening");
   } else if (type === "drop_queued") {
     audioPlayer.dropQueued();
@@ -185,11 +200,16 @@ socket.onMessage((msg) => {
     if (state === "thinking") transition("thinking");
     else if (state === "speaking") transition("speaking");
     else if (state === "compacting") transition("compacting");
-    else if (state === "idle") transition(isMuted ? "idle" : "listening");
+    // Don't drop the orb out of "speaking" while the fallback voice is still
+    // talking: null-audio chunks are acked server-side the instant they're
+    // sent, so `idle` arrives well before speechSynthesis has finished.
+    else if (state === "idle" && !browserSpeech.isSpeaking()) transition(isMuted ? "idle" : "listening");
   } else if (type === "text") {
-    // A chunk TTS could not voice: show it instead of losing it
+    // A chunk Fish Audio could not voice. Show it, and — when the server has
+    // asked us to — speak it with the OS voice instead of losing it.
     console.log("[JARVIS]", msg.text);
     statusEl.textContent = String(msg.text);
+    if (browserTTS) browserSpeech.speak(String(msg.text ?? ""));
   } else if (type === "notice") {
     // Shown, never spoken. The server sends one when it is about to be busy
     // for a few seconds (a context rotation), and an empty string to clear it.
