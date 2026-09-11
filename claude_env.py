@@ -28,6 +28,19 @@ import shlex
 SCRUBBED_ENV_PREFIXES = ("CLAUDE_CODE_", "ANTHROPIC_")
 SCRUBBED_ENV_KEYS = {"CLAUDECODE"}
 
+# The one CLAUDE_CODE_-prefixed variable that must survive the scrub above.
+# It is a *subscription* credential -- the long-lived token `claude
+# setup-token` prints, documented as the way to authenticate a headless `-p`
+# child when no browser login is available (docs.claude.com/en/docs/
+# claude-code/authentication#generate-a-long-lived-token) -- not an API key,
+# so keeping it does not reintroduce the billing hazard the rest of the
+# prefix exists to block. Dropping it silently is worse than keeping it: a
+# server deployment sets exactly this variable and nothing else, and a
+# scrubbed child would either fail to authenticate at all or (if
+# ANTHROPIC_API_KEY happened to be set too) fall back to paid API billing
+# with no error pointing at why.
+_KEPT_DESPITE_PREFIX = {"CLAUDE_CODE_OAUTH_TOKEN"}
+
 # asyncio.create_subprocess_exec gives a child's stdout/stderr StreamReader a
 # 64 KiB *line* buffer by default (asyncio.streams._DEFAULT_LIMIT). `claude -p
 # --output-format stream-json` emits one JSON object per line, and a single
@@ -74,5 +87,5 @@ def child_env(base: dict[str, str] | None = None) -> dict[str, str]:
     CLAUDE_CONFIG_DIR, the user's own variables — passes through untouched."""
     source = os.environ if base is None else base
     return {k: v for k, v in source.items()
-            if not k.startswith(SCRUBBED_ENV_PREFIXES)
+            if (not k.startswith(SCRUBBED_ENV_PREFIXES) or k in _KEPT_DESPITE_PREFIX)
             and k not in SCRUBBED_ENV_KEYS}
